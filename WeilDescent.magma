@@ -1,0 +1,524 @@
+// Nick has changed this program to accept the parameters from the command line as well as a additional variable, iter
+
+// I have changed the program such that p is not necessarily a prime but can be a prime power
+// this is done by adding an argument n in all functions, where n|Degree(K), defining an intermediary field of size (p^(Degree(K)/n))
+
+// given a field F_{p^n}, return standard basis of size n1 over subfield Fp
+StandardVectorSubspace:=function(K,n1,n)
+	N:=Degree(K);
+	if (Degree(K) mod n) ne 0 then "Warning: n should divide the degree of K"; end if;
+	Fp:=sub<K|Integers()!(N/n)>;
+	return [(Generator(K, Fp))^(t): t in [0..n1-1]] ;
+end function;
+
+// given a field F_{p^n}, return normal basis of size n1
+NormalVectorSubspace:=function(K,n1,n)
+	N:=Degree(K);
+	if (Degree(K) mod n) ne 0 then "Warning: n should divide the degree of K"; end if;
+	Fp:=sub<K|Integers()!(N/n)>;
+	p:=#Fp;
+	beta:=NormalElement(K,Fp);
+	return [beta^(p^t): t in [0..n1-1]] ;
+end function;
+
+
+
+
+// given a field F_{p^n}, return random basis of size n1
+RandomVectorSubspace:=function(K,n1,n)
+	N:=Degree(K);
+	if (Degree(K) mod n) ne 0 then "Warning: n should divide the degree of K"; end if;
+	Fp:=sub<K|Integers()!(N/n)>;
+	p:=#Fp;
+
+	subspace:=[];
+	dim:=0;
+	matss:=Matrix(Fp,n1,n,[0:ind in [1..n1*n]]);
+	while dim lt n1 do
+		ssel:=Random(K);
+		sselvec:=Eltseq(ssel,Fp);
+		for indcol in [1..n] do
+			matss[dim+1,indcol]:=sselvec[indcol];
+		end for;
+		if Rank(matss) gt dim then
+			subspace:=subspace cat [ssel];
+			dim:=dim+1;
+		end if;
+	end while;
+
+	return subspace ;
+end function;
+
+
+
+
+// given field F_{p^n}, create a Frobenius-invariant set of constraints for any normal basis
+// such that the solution set has size a priori between 2^{s-1} and 2^s
+// this is (heuristically) achieved by adding "quadratic/cubic shift constraints with random affine values"
+FrobeniusConstraints:=function(K,s,n)
+	N:=Degree(K);
+	if (Degree(K) mod n) ne 0 then "Warning: n should divide the degree of K"; end if;
+	Fp:=sub<K|Integers()!(N/n)>;
+	p:=#Fp;
+	R:=PolynomialRing(Fp,n);
+
+	// "cyclic shift" by k
+	CyclicShift:=function(pol,k)
+		return hom<R->R | [R.(((ind+k) mod n)+1) : ind in [0..n-1]]> ;
+	end function;
+
+	QuadraticConstraint:=function(k)
+		return &+[R.(ind+1) * R.(((ind+k) mod n)+1) : ind in [0..n-1]] ;   //+ Random(Fp);
+	end function;
+
+	CubicConstraint:=function(k1,k2)
+		return &+[R.(ind+1) * R.(((ind+k1) mod n)+1) * R.(((ind+k2) mod n)+1): ind in [0..n-1]] ;   //+ Random(Fp);
+	end function;
+
+	constraints:=[&+[R.ind : ind in [1..n]]];
+	for k in [1..n-s] do
+		 constraints:= constraints cat [QuadraticConstraint(k)] ;
+	end for;
+
+	if s lt n/2 then
+		for k1 in [Floor(n/2)..n-s] do 
+			constraints:= constraints cat [CubicConstraint(k1,1)] ;
+		end for;
+	end if;
+
+	return constraints; 
+end function;
+
+
+
+
+
+
+// given a set of polynomials in the same polynomial ring over F_{p^n} and a set of vector spaces where the variables are constrained, apply a Weil descent to obtain a system
+MyWeilDescent:= function(sysK,subspaces,n)
+	DEBUG:=0 ;	
+
+	// recover main parameters
+	Rq:=Parent(sysK[1]);
+	m:=Rank(Rq);
+	Fq:=BaseRing(Rq);
+	N:=Degree(Fq);
+	if (Degree(Fq) mod n) ne 0 then "Warning: n should divide the degree of K"; end if;
+	Fp:=sub<Fq|Integers()!(N/n)>;
+	p:=#Fp;
+
+	// construct small field variables
+	nvar:=0;
+	ninit:=[];
+	names:=[];
+	for indvar in [1..Rank(Rq)] do
+		ninit:=ninit cat [nvar] ;
+		nvar:=nvar+#subspaces[indvar] ;
+		names:=names cat [Sprint(Rq.indvar) cat "_" cat Sprint(ind): ind in [1..#subspaces[indvar]]] ;
+	end for;
+	Rpq:=PolynomialRing(Fq,nvar,"grevlex");
+	AssignNames(~Rpq,names) ;
+	if DEBUG ge 1 then "variables are", [Rpq.ind: ind in [1..Rank(Rpq)]]; end if;
+	
+
+	// field equations
+	fieldEq:=[(Rpq.ind)^p-Rpq.ind : ind in [1..Rank(Rpq)]] ;
+
+
+	// substitution vector
+	subvec:=[&+[Rpq.(ninit[indvar]+ind)*subspaces[indvar][ind]: ind in [1..#subspaces[indvar]]]: indvar in [1..Rank(Rq)]] ;
+	if DEBUG ge 1 then "subvec=",subvec; end if;
+
+	// make substitution
+	submap:=hom<Rq -> Rpq | subvec>;
+	sys:=[NormalForm(submap(poly),fieldEq): poly in sysK] ;
+	if DEBUG ge 1 then "sys=",sys; end if;
+
+	// build the system
+	sysFp:=[];
+	for poly in sys do
+		eqPoly:=[Rpq!0: ind in [1..n]] ;
+		for term in Terms(poly) do
+			coeff:=LeadingCoefficient(term);
+			mon:=LeadingMonomial(term);
+			coeffseq:=Eltseq(coeff,Fp);
+
+			for indfro in [1..n] do
+				eqPoly[indfro]:=eqPoly[indfro] + coeffseq[indfro]*mon ;
+			end for;
+		end for;
+		sysFp:= sysFp cat eqPoly ;
+	end for;
+
+	// cast equations to Fp
+	Rp:=ChangeRing(Rpq,Fp);
+	sysFp:=[Rp!poly: poly in (sysFp cat fieldEq)] ;
+	if DEBUG ge 1 then "sysFp is",sysFp; end if;
+
+
+	// return
+	return sysFp;
+
+end function;
+
+
+
+
+
+
+
+// given a set of polynomials in the same polynomial ring over F_{p^n} and a set of vector spaces where the variables are constrained, apply a Weil descent to obtain a system
+FrobeniusWeilDescent:= function(sysK,subspaces,n)
+	DEBUG:=0 ;	
+
+	// recover main parameters
+	Rq:=Parent(sysK[1]);
+	m:=Rank(Rq);
+	Fq:=BaseRing(Rq);
+	N:=Degree(Fq);
+	if (Degree(Fq) mod n) ne 0 then "Warning: n should divide the degree of K"; end if;
+	Fp:=sub<Fq|Integers()!(N/n)>;
+	p:=#Fp;
+	if DEBUG ge 1 then "sysK=",sysK; end if;
+
+
+	// perform p-ary decomposition of exponents
+	Rfro:=PolynomialRing(Fq,m*n,"grevlex");
+	AssignNames(~Rfro,&cat[["Y" cat Sprint(indvar) cat "_" cat Sprint(ind): ind in [1..n]]    : indvar in [1..m]]) ;
+	homfro:=hom<Rq -> Rfro | [Rfro.(ind*n+1): ind in [0..m-1]]>;
+	p_reduce:=&cat[ [(Rfro.(indvar*n+(ind mod n)+1))^p  -  (Rfro.(indvar*n+((ind+1) mod n)+1)) : ind in [0..n-1]]  : indvar in [0..m-1]];
+	if DEBUG ge 1 then "p_reduce=",p_reduce; end if;
+	sysK:=[NormalForm(homfro(pol),p_reduce) : pol in sysK] ;
+	if DEBUG ge 1 then "sysK=",sysK; end if;
+
+	// construct small field variables
+	nvar:=0;
+	ninit:=[];
+	names:=[];
+	for indvar in [1..Rank(Rq)] do
+		ninit:=ninit cat [nvar] ;
+		nvar:=nvar+#subspaces[indvar] ;
+		names:=names cat [Sprint(Rq.indvar) cat "_" cat Sprint(ind): ind in [1..#subspaces[indvar]]] ;
+	end for;
+	Rpq:=PolynomialRing(Fq,nvar,"grevlex");
+	AssignNames(~Rpq,names) ;
+	if DEBUG ge 1 then "variables are", [Rpq.ind: ind in [1..Rank(Rpq)]]; end if;
+	
+	// field equations
+	fieldEq:=[(Rpq.ind)^p-Rpq.ind : ind in [1..Rank(Rpq)]] ;
+
+
+	// substitution vector
+	subvec:=&cat[  [&+[Rpq.(ninit[indvar]+ind)*(subspaces[indvar][ind])^(p^(indfro)): ind in [1..#subspaces[indvar]]]: indfro in [0..n-1]]   : indvar in [1..Rank(Rq)]] ;
+	if DEBUG ge 1 then "subvec=",subvec; end if;
+
+	// make substitution
+	submap:=hom<Rfro -> Rpq | subvec>;
+	sys:=[NormalForm(submap(poly),fieldEq): poly in sysK] ;
+	if DEBUG ge 1 then "sys=",sys; end if;
+
+	// build the system
+	sysFp:=[];
+	for poly in sys do
+		eqPoly:=[Rpq!0: ind in [1..n]] ;
+		for term in Terms(poly) do
+			coeff:=LeadingCoefficient(term);
+			mon:=LeadingMonomial(term);
+			coeffseq:=Eltseq(coeff,Fp);
+
+			for indfro in [1..n] do
+				eqPoly[indfro]:=eqPoly[indfro] + coeffseq[indfro]*mon ;
+			end for;
+		end for;
+		sysFp:= sysFp cat eqPoly ;
+	end for;
+
+	// cast equations to Fp
+	Rp:=ChangeRing(Rpq,Fp);
+	sysFp:=[Rp!poly: poly in (sysFp cat fieldEq)] ;
+	if DEBUG ge 1 then "sysFp is",sysFp; end if;
+
+
+	// return
+	return sysFp;
+
+end function;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+CheckSolution:=function(sysK,subspaces,sol)
+	DEBUG:=0;
+
+	Rq:=Parent(sysK[1]);
+	Fq:=BaseRing(Rq) ;
+
+	ninit:=[0];
+	for indvar in [1..Rank(Rq)-1] do
+		ninit:=ninit cat [ninit[indvar]+#subspaces[indvar]] ;
+	end for;
+
+	// substitution vector
+	subvec:=[&+[sol[ninit[indvar]+ind]*subspaces[indvar][ind]: ind in [1..#subspaces[indvar]]]: indvar in [1..Rank(Rq)]] ;
+	submap:=hom<Rq -> Fq | subvec>;
+	sys:=[submap(poly): poly in sysK] ;
+	if DEBUG ge 1 then "sys=",sys; end if;
+
+	return not (false in [pol eq Fq!0: pol in sys]) ;
+end function;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Building system for FPPR and Rob-Steven variants
+// ------------------------------------------------
+
+BuildSystem:=function(N,n,m,type)  	// N is the total degree extension, n is the extension over the intermediary field
+
+	// parameters
+	Fq:=FiniteField(2^N);
+	np:=Floor(n/m);
+
+
+
+
+
+
+
+
+
+// Construction of Semaev's polynomials
+// ------------------------------------
+
+// Semaev 3
+Sym3<e1,e2,e3,a6>:=PolynomialRing(Fq,4);
+S3:=e2^2+e3+a6;
+// "S3=",S3;
+
+// isolate last variable
+MixSym3<e1,e2,X,a6>:=PolynomialRing(Fq,4);
+Sym3_to_MixSym3:=hom<Sym3 -> MixSym3 | e1+X, e2 + e1*X, e2*X,  a6> ;
+mixS3:=Sym3_to_MixSym3(S3);
+// "mixS3=",mixS3;
+// "\n";
+
+
+// compute Semaev 4
+Sym4<f1,f2,g1,g2,X,e1,e2,e3,e4,a6>:=PolynomialRing(Fq,10,"elim",5);
+Sym3_to_f:=hom<MixSym3 -> Sym4| f1,f2,X,a6>;
+Sym3_to_g:=hom<MixSym3 -> Sym4| g1,g2,X,a6>;
+S4:=Resultant(Sym3_to_f(mixS3), Sym3_to_g(mixS3), X);
+// "S4=",S4;
+
+fgElimIdeal:=[e1-(f1+g1),  e2-(f2+g2+f1*g1),  e3-(f2*g1+f1*g2),  e4-f2*g2] ;
+S4:=NormalForm(S4,fgElimIdeal);
+Sym4<e1,e2,e3,e4,a6>:=PolynomialRing(Fq,5);
+S4:=(hom<Parent(S4)->Sym4 | [0,0,0,0,0,e1,e2,e3,e4,a6]>)(S4) ;
+// "S4=",S4;
+
+// isolate last variable
+MixSym4<e1,e2,e3,X,a6>:=PolynomialRing(Fq,5);
+Sym4_to_MixSym4:=hom<Sym4 -> MixSym4 | e1+X, e2 + e1*X, e3+e2*X, e3*X, a6> ;
+mixS4:=Sym4_to_MixSym4(S4);
+// "mixS4=",mixS4;
+// "\n";
+
+
+Sym5:=Sym4; MixSym5:=MixSym4;S5:=S4;mixS5:=mixS4 ;
+if m gt 3 then 
+	// compute Semaev 5
+	Sym5<f1,f2,f3,g1,g2,X,e1,e2,e3,e4,e5,a6>:=PolynomialRing(Fq,12,"elim",6);
+	Sym4_to_f:=hom<MixSym4 -> Sym5| f1,f2,f3,X,a6>;
+	Sym3_to_g:=hom<MixSym3 -> Sym5| g1,g2,X,a6>;
+	S5:=Resultant(Sym4_to_f(mixS4), Sym3_to_g(mixS3), X);
+	// "S5=",S5;
+
+	fgElimIdeal:=[e1-(f1+g1),  e2-(f2+g2+f1*g1),  e3-(f2*g1+f1*g2),  e4-(f3*g1+f2*g2), e5-(e3*g2)] ;
+	S5:=NormalForm(S5,fgElimIdeal);
+	Sym5<e1,e2,e3,e4,e5,a6>:=PolynomialRing(Fq,6);
+	S5:=(hom<Parent(S5)->Sym5 | [0,0,0,0,0,0,e1,e2,e3,e4,e5,a6]>)(S5) ;
+	// "S5=",S5;
+
+	// isolate last variable
+	MixSym5<e1,e2,e3,e4,X,a6>:=PolynomialRing(Fq,6);
+	Sym5_to_MixSym5:=hom<Sym5 -> MixSym5 | e1+X, e2 + e1*X, e3+e2*X, e4+e3*X, e4*X, a6> ;
+	mixS5:=Sym5_to_MixSym5(S5);
+	// "mixS5=",mixS5;
+	// "\n";
+end if;
+
+
+
+
+// choose random a6 and random point on the curve
+// ----------------------------------------------
+a6:=Random(Fq);
+// "We fixed a6 randomly to",a6;
+
+E:=EllipticCurve([Fq!1,Fq!1,0,0,a6]);
+X:=Random(Fq);
+while ( not IsPoint(E,X)) do
+	X:=Random(Fq);
+end while;
+// "We fixed X randomly to",X;
+
+
+
+
+	
+	// generate the system over Fq
+	case m:
+		when 2:
+			Rq<x1,x2>:=PolynomialRing(Fq,2) ;
+			// Type(x1); Type(x2); Type(X); Type(a6);
+			Semaev:=hom<MixSym3 -> Rq | [x1+x2,x1*x2,X,a6]>(mixS3) ;
+			sysFq:=[Semaev] ;
+
+		when 3:
+			Rq<x1,x2,x3>:=PolynomialRing(Fq,3) ;
+			// Type(x1); Type(x2); Type(x3); Type(X); Type(a6);
+			Semaev:=hom<MixSym4 -> Rq | [x1+x2+x3,x1*x2+x1*x3+x2*x3,x1*x2*x3,X,a6]>(mixS4) ;
+			sysFq:=[Semaev] ;
+
+		when 4:
+			Rq<x1,x2,x3,x4>:=PolynomialRing(Fq,4) ;
+			// Type(x1); Type(x2); Type(x3); Type(x4); Type(X); Type(a6);
+			Semaev:=hom<MixSym5 -> Rq | [x1+x2+x3+x4,x1*x2+x1*x3+x1*x4+x2*x3+x2*x4+x3*x4,x1*x2*x3+x1*x2*x4+x1*x3*x4+x2*x3*x4,x1*x2*x3*x4,X,a6]>(mixS5) ;
+			sysFq:=[Semaev] ;
+
+	end case ;
+	// "SysFq=",sysFq;
+
+	// generate constraints
+	case type:
+		when "FPPR":
+			// build the constraints
+			constraints:=[StandardVectorSubspace(Fq,np,n): ind in [1..m]] ;
+
+		when "RobSteven":
+			constraints:=[StandardVectorSubspace(Fq,n,n): ind in [1..m]] ;
+	end case;	
+
+	
+
+//sysFq:=[Rq.1];
+
+	// Weil descent
+	//sysFp:=MyWeilDescent(sysFq,constraints,n);
+	sysFp:=FrobeniusWeilDescent(sysFq,constraints,n);
+
+	// in Rob-Steven version, add the symmetric constraints
+	if type eq "RobSteven" then
+		constraints2:=FrobeniusConstraints(Fq,np,n);
+		Rp1:=Parent(sysFp[1]);
+		Rp2:=Parent(constraints2[1]);
+		sysFp:=sysFp cat [ (hom<Rp2->Rp1 | [Rp1.(indvar*n+ind): ind in [1..n]]>)(pol) : pol in constraints2, indvar in [0..m-1] ] ;
+	end if;
+
+
+	return sysFp,constraints, sysFq ;
+end function;
+
+
+
+// do tests
+types:=["FPPR","RobSteven"];
+testfunction:=function(p, N, n, m)
+	type:=types[1];
+	// "using the method",type;
+
+	init := false;
+	while init eq false do
+		try
+			sysFp,constraints, sysFq:=BuildSystem(N,n,m,type);
+			init := true;
+		catch e
+			print "Attempt to create elliptic curve failed";
+		end try;
+	end while;
+
+	// "system is", sysFp;
+	// "Time at generating the system is", Cputime();
+	//"\n\n\n";
+
+	//SetVerbose("Groebner",2);
+	//SetVerbose("FGLM",2);
+	//SetVerbose("GroebnerWalk",2);
+	SetVerbose("Faugere",2);
+
+	start := Cputime();
+	gb:=GroebnerBasis(sysFp);
+	print "Total GroebnerBasis time:", Cputime(start);
+
+	// "Time after solving is", Cputime();
+	//"\n\n\n";
+
+	solutions:=Variety(Ideal(gb));
+	// "solutions are",solutions;
+	// "nb solutions is"; #solutions;
+
+	res := false;
+
+	for sol in solutions do
+		if CheckSolution(sysFq,constraints,sol) then
+			// "sol",sol,"is ok";
+			res := true;
+		else
+			// "sol",sol,"is WRONG!!!";
+		end if;
+	end for ;
+
+	if res then
+		print "groebner basis was", gb;
+		// "system is", sysFp; 
+		Write(system_file, sysFp);
+	end if;
+
+	return res; 
+end function;
+
+p:=StringToInteger(p);
+N:=StringToInteger(N);
+n:=StringToInteger(n);
+m:=StringToInteger(m);
+
+iters := 0;
+result := false;
+
+while(iters lt 100 and not result) do
+	print "Weil Descent attempt", iters;
+	result := testfunction(p, N, n, m);
+	iters := iters + 1;
+end while;
+
+quit;
